@@ -84,14 +84,17 @@ def download_single_task(client, download, task, options):
 		if mini_hash and resuming and verify_mini_hash(path, task):
 			return
 		download1(client, url, path, size)
-		verify = verify_basic_hash if no_hash else verify_hash
-		if not verify(path, task):
-			with colors(options.get('colors')).yellow():
-				print 'hash error, redownloading...'
-			os.remove(path)
-			download1(client, url, path, size)
+		if get_config('tool') != 'aria2rpc':
+			# don't verify hash if using aria2rpc because
+			# download is async 
+			verify = verify_basic_hash if no_hash else verify_hash
 			if not verify(path, task):
-				raise Exception('hash check failed')
+				with colors(options.get('colors')).yellow():
+					print 'hash error, redownloading...'
+				os.remove(path)
+				download1(client, url, path, size)
+				if not verify(path, task):
+					raise Exception('hash check failed')
 	download_url = str(task['xunlei_url'])
 	if output:
 		output_path = output
