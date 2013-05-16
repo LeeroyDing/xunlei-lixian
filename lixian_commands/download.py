@@ -1,4 +1,5 @@
 
+import lixian_download_tools
 from lixian_commands.util import *
 from lixian_cli_parser import *
 from lixian_config import *
@@ -44,7 +45,60 @@ def verify_mini_bt_hash(dirname, files):
 			return False
 	return True
 
-def download_single_task(client, download, task, options):
+
+def download_file(client, path, task, options):
+	download_tool = lixian_download_tools.get_tool(options['tool'])
+
+	resuming = options.get('resuming')
+	overwrite = options.get('overwrite')
+	mini_hash = options.get('mini_hash')
+	no_hash = options.get('no_hash')
+
+	url = str(task['xunlei_url'])
+
+	def download1(download, path):
+		if not os.path.exists(path):
+			download()
+		elif not resuming:
+			if overwrite:
+				download()
+			else:
+				raise Exception('%s already exists. Please try --continue or --overwrite' % path)
+		else:
+			if download.finished():
+				pass
+			else:
+				download()
+
+	def download1_checked(client, url, path, size):
+		download = download_tool(client=client, url=url, path=path, size=size, resuming=resuming)
+		checked = 0
+		while checked < 10:
+			download1(download, path)
+			if download.finished():
+				break
+			else:
+				checked += 1
+		assert os.path.getsize(path) == size, 'incorrect downloaded file size (%s != %s)' % (os.path.getsize(path), size)
+
+	def download2(client, url, path, task):
+		size = task['size']
+		if mini_hash and resuming and verify_mini_hash(path, task):
+			return
+		download1_checked(client, url, path, size)
+		verify = verify_basic_hash if no_hash else verify_hash
+		if not verify(path, task):
+			with colors(options.get('colors')).yellow():
+				print 'hash error, redownloading...'
+			os.rename(path, path + '.error')
+			download1_checked(client, url, path, size)
+			if not verify(path, task):
+				raise Exception('hash check failed')
+
+	download2(client, url, path, task)
+
+
+def download_single_task(client, task, options):
 	output = options.get('output')
 	output = output and os.path.expanduser(output)
 	output_dir = options.get('output_dir')
@@ -63,39 +117,7 @@ def download_single_task(client, download, task, options):
 			with colors(options.get('colors')).yellow():
 				print 'skip task %s as the status is %s' % (task['name'].encode(default_encoding), task['status_text'])
 			return
-	def download1(client, url, path, size):
-		if not os.path.exists(path):
-			download(client, url, path)
-		elif not resuming:
-			if overwrite:
-				download(client, url, path)
-			else:
-				raise Exception('%s already exists. Please try --continue or --overwrite' % path)
-		else:
-			assert os.path.getsize(path) <= size, 'existing file bigger than expected, unsafe to continue nor overwrite'
-			if os.path.getsize(path) < size:
-				download(client, url, path, resuming)
-			elif os.path.getsize(path) == size:
-				pass
-			else:
-				raise NotImplementedError()
-	def download2(client, url, path, task):
-		size = task['size']
-		if mini_hash and resuming and verify_mini_hash(path, task):
-			return
-		download1(client, url, path, size)
-		if get_config('tool') != 'aria2rpc':
-			# don't verify hash if using aria2rpc because
-			# download is async 
-			verify = verify_basic_hash if no_hash else verify_hash
-			if not verify(path, task):
-				with colors(options.get('colors')).yellow():
-					print 'hash error, redownloading...'
-				os.remove(path)
-				download1(client, url, path, size)
-				if not verify(path, task):
-					raise Exception('hash check failed')
-	download_url = str(task['xunlei_url'])
+
 	if output:
 		output_path = output
 		output_dir = os.path.dirname(output)
@@ -104,8 +126,6 @@ def download_single_task(client, download, task, options):
 		output_name = escape_filename(task['name']).encode(default_encoding)
 		output_dir = output_dir or '.'
 		output_path = os.path.join(output_dir, output_name)
-	referer = str(client.get_referer())
-	gdriveid = str(client.get_gdriveid())
 
 	if task['type'] == 'bt':
 		files, skipped, single_file = lixian_query.expand_bt_sub_tasks(task)
@@ -148,8 +168,7 @@ def download_single_task(client, download, task, options):
 				subdir = dirname + os.path.sep + subdir # fix issue #82
 				if not os.path.exists(subdir):
 					os.makedirs(subdir)
-			download_url = str(f['xunlei_url'])
-			download2(client, download_url, path, f)
+			download_file(client, path, f, options)
 		if save_torrent_file:
 			info_hash = str(task['bt_hash'])
 			if single_file:
@@ -179,14 +198,14 @@ def download_single_task(client, download, task, options):
 
 		with colors(options.get('colors')).green():
 			print output_name, '...'
-		download2(client, download_url, output_path, task)
+		download_file(client, output_path, task, options)
 
 	if delete and 'files' not in task:
 		client.delete_task(task)
 
-def download_multiple_tasks(client, download, tasks, options):
+def download_multiple_tasks(client, tasks, options):
 	for task in tasks:
-		download_single_task(client, download, task, options)
+		download_single_task(client, task, options)
 	skipped = filter(lambda t: t['status_text'] != 'completed', tasks)
 	if skipped:
 		with colors(options.get('colors')).yellow():
@@ -216,9 +235,10 @@ def download_multiple_tasks(client, download, tasks, options):
 @command_line_option('watch-present')
 @command_line_value('watch-interval', default=get_config('watch-interval', '3m'))
 def download_task(args):
-	import lixian_download_tools
-	download = lixian_download_tools.get_tool(args.tool)
-	download_args = {'output': args.output,
+	assert len(args) or args.input or args.all or args.category, 'Not enough arguments'
+	lixian_download_tools.get_tool(args.tool) # check tool
+	download_args = {'tool': args.tool,
+	                 'output': args.output,
 	                 'output_dir': args.output_dir,
 	                 'delete': args.delete,
 	                 'resuming': args._args['continue'],
@@ -229,7 +249,6 @@ def download_task(args):
 	                 'save_torrent_file': args.save_torrent_file,
 	                 'colors': args.colors}
 	client = create_client(args)
-	assert len(args) or args.input or args.all or args.category, 'Not enough arguments'
 	query = lixian_query.build_query(client, args)
 	query.query_once()
 
@@ -246,7 +265,7 @@ def download_task(args):
 		tasks = query.pull_completed()
 		while True:
 			if tasks:
-				download_multiple_tasks(client, download, tasks, download_args)
+				download_multiple_tasks(client, tasks, download_args)
 			if not query.download_jobs:
 				break
 			if not tasks:
@@ -259,7 +278,7 @@ def download_task(args):
 		tasks = query.pull_completed()
 		while True:
 			if tasks:
-				download_multiple_tasks(client, download, tasks, download_args)
+				download_multiple_tasks(client, tasks, download_args)
 			if (not query.download_jobs) and (not query.queries):
 				break
 			if not tasks:
@@ -272,6 +291,6 @@ def download_task(args):
 		tasks = query.peek_download_jobs()
 		if args.output:
 			assert len(tasks) == 1
-			download_single_task(client, download, tasks[0], download_args)
+			download_single_task(client, tasks[0], download_args)
 		else:
-			download_multiple_tasks(client, download, tasks, download_args)
+			download_multiple_tasks(client, tasks, download_args)

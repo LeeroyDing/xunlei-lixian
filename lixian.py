@@ -39,7 +39,7 @@ class Logger:
 logger = Logger()
 
 class XunleiClient:
-	page_size = 9999
+	page_size = 100
 	bt_page_size = 9999
 	def __init__(self, username=None, password=None, cookie_path=None, login=True):
 		self.username = username
@@ -224,11 +224,18 @@ class XunleiClient:
 			gdriveid = data['info']['user']['cookie']
 			self.set_gdriveid(gdriveid)
 			self.save_cookies()
-		tasks = parse_json_tasks(data)
+		# tasks = parse_json_tasks(data)
+		tasks = [t for t in parse_json_tasks(data) if not t['expired']]
 		for t in tasks:
 			t['client'] = self
 		current_page = int(re.search(r'page=(\d+)', url).group(1))
-		total_pages = data['global_new']['page'].count('<li><a')
+		total_tasks = int(data['info']['total_num'])
+		total_pages = total_tasks / self.page_size
+		if total_tasks % self.page_size != 0:
+			total_pages += 1
+		if total_pages == 0:
+			total_pages = 1
+		assert total_pages >= data['global_new']['page'].count('<li><a')
 		if current_page < total_pages:
 			next = re.sub(r'page=(\d+)', 'page=%d' % (current_page + 1), url)
 		else:
@@ -238,8 +245,7 @@ class XunleiClient:
 	def read_task_page(self, type_id, page=1):
 		# type_id: 1 for downloading, 2 for completed, 4 for downloading+completed+expired, 11 for deleted, 13 for expired
 		if type_id == 0:
-			result = self.read_task_page(4, page)
-			return [t for t in result[0] if not t['expired']], result[1]
+			type_id = 4
 		page_size = self.page_size
 		p = 1 # XXX: what is it?
 		# jsonp = 'jsonp%s' % current_timestamp()
@@ -465,7 +471,7 @@ class XunleiClient:
 
 		response = self.urlread(upload_url, data=body, headers={'Content-Type': content_type}).decode('utf-8')
 
-		upload_success = re.search(r'<script>document\.domain="xunlei\.com";var btResult =(\{.*\});</script>', response, flags=re.S)
+		upload_success = re.search(r'<script>document\.domain="xunlei\.com";var btResult =(\{.*\});var btRtcode = 0</script>', response, flags=re.S)
 		if upload_success:
 			bt = json.loads(upload_success.group(1))
 			bt_hash = bt['infoid']
@@ -477,7 +483,7 @@ class XunleiClient:
 					'from':'0'}
 			response = self.urlread(commit_url, data=data)
 			#assert_response(response, jsonp)
-			assert re.match(r'%s\({"id":"\d+","progress":1}\)' % jsonp, response), repr(response)
+			assert re.match(r'%s\({"id":"\d+","progress":1,"rtcode":1}\)' % jsonp, response), repr(response)
 			return bt_hash
 		already_exists = re.search(r"parent\.edit_bt_list\((\{.*\}),''\)", response, flags=re.S)
 		if already_exists:
@@ -512,7 +518,7 @@ class XunleiClient:
 			raise NotImplementedError(repr(response))
 		args = success.group(1).decode('utf-8')
 		args = literal_eval(args.replace('new Array', ''))
-		_, cid, tsize, btname, _, names, sizes_, sizes, _, types, findexes, timestamp = args
+		_, cid, tsize, btname, _, names, sizes_, sizes, _, types, findexes, timestamp, _ = args
 		def toList(x):
 			if type(x) in (list, tuple):
 				return x
@@ -529,7 +535,7 @@ class XunleiClient:
 		commit_url = 'http://dynamic.cloud.vip.xunlei.com/interface/bt_task_commit?callback=%s' % jsonp
 		response = self.urlread(commit_url, data=data)
 		#assert_response(response, jsonp)
-		assert re.match(r'%s\({"id":"\d+","progress":1}\)' % jsonp, response), repr(response)
+		assert re.match(r'%s\({"id":"\d+","progress":1,"rtcode":1}\)' % jsonp, response), repr(response)
 		return cid
 
 	def readd_all_expired_tasks(self):
@@ -615,12 +621,12 @@ def convert_task(data):
 	expired = {'0':False, '4': True}[data['flag']]
 	task = {'id': data['id'],
 			'type': re.match(r'[^:]+', data['url']).group().lower(),
-			'name': data['taskname'],
+			'name': unescape_html(data['taskname']),
 			'status': int(data['download_status']),
 			'status_text': {'0':'waiting', '1':'downloading', '2':'completed', '3':'failed', '5':'pending'}[data['download_status']],
 			'expired': expired,
 			'size': int(data['ysfilesize']),
-			'original_url': data['url'],
+			'original_url': unescape_html(data['url']),
 			'xunlei_url': data['lixian_url'] or None,
 			'bt_hash': data['cid'],
 			'dcid': data['cid'],

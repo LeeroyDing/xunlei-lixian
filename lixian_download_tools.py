@@ -12,9 +12,33 @@ download_tools = {}
 
 def download_tool(name):
 	def register(tool):
-		download_tools[name] = tool
+		download_tools[name] = tool_adaptor(tool)
 		return tool
 	return register
+
+class DownloadToolAdaptor:
+	def __init__(self, tool, **kwargs):
+		self.tool = tool
+		self.client = kwargs['client']
+		self.url = kwargs['url']
+		self.path = kwargs['path']
+		self.resuming = kwargs.get('resuming')
+		self.size = kwargs['size']
+	def finished(self):
+		assert os.path.getsize(self.path) <= self.size, 'existing file (%s) bigger than expected (%s)' % (os.path.getsize(self.path), self.size)
+		return os.path.getsize(self.path) == self.size
+	def __call__(self):
+		self.tool(self.client, self.url, self.path, self.resuming)
+
+def tool_adaptor(tool):
+	import types
+	if type(tool) == types.FunctionType:
+		def adaptor(**kwargs):
+			return DownloadToolAdaptor(tool, **kwargs)
+		return adaptor
+	else:
+		return tool
+
 
 def check_bin(bin):
 	import distutils.spawn
@@ -62,20 +86,33 @@ def curl_download(client, download_url, filename, resuming=False):
 
 @download_tool('aria2')
 @download_tool('aria2c')
-def aria2_download(client, download_url, path, resuming=False):
-	gdriveid = str(client.get_gdriveid())
-	dir = os.path.dirname(path)
-	filename = os.path.basename(path)
-	aria2_opts = ['aria2c', '--header=Cookie: gdriveid='+gdriveid, download_url, '--out', filename, '--file-allocation=none']
-	if dir:
-		aria2_opts.extend(('--dir', dir))
-	if resuming:
-		aria2_opts.append('-c')
-	aria2_opts.extend(get_config('aria2-opts', '').split())
-	check_bin(aria2_opts[0])
-	exit_code = subprocess.call(aria2_opts)
-	if exit_code != 0:
-		raise Exception('aria2c exited abnormally')
+class Aria2DownloadTool:
+	def __init__(self, **kwargs):
+		self.gdriveid = str(kwargs['client'].get_gdriveid())
+		self.url = kwargs['url']
+		self.path = kwargs['path']
+		self.size = kwargs['size']
+		self.resuming = kwargs.get('resuming')
+	def finished(self):
+		assert os.path.getsize(self.path) <= self.size, 'existing file (%s) bigger than expected (%s)' % (os.path.getsize(self.path), self.size)
+		return os.path.getsize(self.path) == self.size and not os.path.exists(self.path + '.aria2')
+	def __call__(self):
+		gdriveid = self.gdriveid
+		download_url = self.url
+		path = self.path
+		resuming = self.resuming
+		dir = os.path.dirname(path)
+		filename = os.path.basename(path)
+		aria2_opts = ['aria2c', '--header=Cookie: gdriveid='+gdriveid, download_url, '--out', filename, '--file-allocation=none']
+		if dir:
+			aria2_opts.extend(('--dir', dir))
+		if resuming:
+			aria2_opts.append('-c')
+		aria2_opts.extend(get_config('aria2-opts', '').split())
+		check_bin(aria2_opts[0])
+		exit_code = subprocess.call(aria2_opts)
+		if exit_code != 0:
+			raise Exception('aria2c exited abnormally')
 
 @download_tool('aria2rpc')
 def aria2rpc_download(client, download_url, path, resuming=False):
