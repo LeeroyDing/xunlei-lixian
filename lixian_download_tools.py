@@ -5,6 +5,8 @@ from lixian_config import *
 import subprocess
 import urllib2
 import os.path
+import json
+import time
 
 download_tools = {}
 
@@ -22,7 +24,10 @@ class DownloadToolAdaptor:
 		self.path = kwargs['path']
 		self.resuming = kwargs.get('resuming')
 		self.size = kwargs['size']
+		self.async = kwargs.get('async')
 	def finished(self):
+		if self.async:
+			return True
 		assert os.path.getsize(self.path) <= self.size, 'existing file (%s) bigger than expected (%s)' % (os.path.getsize(self.path), self.size)
 		return os.path.getsize(self.path) == self.size
 	def __call__(self):
@@ -86,11 +91,13 @@ def curl_download(client, download_url, filename, resuming=False):
 @download_tool('aria2c')
 class Aria2DownloadTool:
 	def __init__(self, **kwargs):
+		self.client = kwargs['client']
 		self.gdriveid = str(kwargs['client'].get_gdriveid())
 		self.url = kwargs['url']
 		self.path = kwargs['path']
 		self.size = kwargs['size']
 		self.resuming = kwargs.get('resuming')
+		self.async = kwargs.get('async')
 	def finished(self):
 		assert os.path.getsize(self.path) <= self.size, 'existing file (%s) bigger than expected (%s)' % (os.path.getsize(self.path), self.size)
 		return os.path.getsize(self.path) == self.size and not os.path.exists(self.path + '.aria2')
@@ -99,6 +106,9 @@ class Aria2DownloadTool:
 		download_url = self.url
 		path = self.path
 		resuming = self.resuming
+		if self.async:
+			aria2rpc_download(self.client, download_url, path, resuming)
+			return
 		dir = os.path.dirname(path)
 		filename = os.path.basename(path)
 		aria2_opts = ['aria2c', '--header=Cookie: gdriveid='+gdriveid, download_url, '--out', filename, '--file-allocation=none']
@@ -111,6 +121,30 @@ class Aria2DownloadTool:
 		exit_code = subprocess.call(aria2_opts)
 		if exit_code != 0:
 			raise Exception('aria2c exited abnormally')
+
+@download_tool('aria2rpc')
+def aria2rpc_download(client, download_url, path, resuming=False):
+        gdriveid = str(client.get_gdriveid())
+        dir = os.path.dirname(path)
+        filename = os.path.basename(path)
+	aria2rpchost = get_config('aria2-rpc-host', 'localhost')
+	aria2rpcport = get_config('aria2-rpc-port', '6800')
+	ts = str(int(time.time()*1000))
+	data = {"jsonrpc": "2.0", 
+		"method":"aria2.addUri",
+		"id": ts,
+		"params": [[download_url], 
+			{
+			"dir": dir,
+			"out": urllib2.unquote(filename),
+			"header": "Cookie: gdriveid="+gdriveid}
+			
+			]
+		}
+	data = json.dumps(data)
+	request_url = "http://"+aria2rpchost+":"+aria2rpcport+"/jsonrpc?tm="+ts
+	urllib2.urlopen(request_url, data)
+
 
 @download_tool('axel')
 def axel_download(client, download_url, path, resuming=False):
