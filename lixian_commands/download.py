@@ -292,26 +292,29 @@ def download_task(args):
 		old_tasks = []
 		tasks = query.pull_completed()
 		while True:
-			new_tasks = []
-			for nt in tasks:
-				is_new = True
-				for ot in old_tasks:
-					if nt['id'] == ot['id']:
-						is_new = False
-						break
-				if is_new:
-					new_tasks.append(nt)
+			try:
+				new_tasks = []
+				for nt in tasks:
+					is_new = True
+					for ot in old_tasks:
+						if nt['id'] == ot['id']:
+							is_new = False
+							break
+					if is_new:
+						new_tasks.append(nt)
 
-			if new_tasks:
-				download_multiple_tasks(client, new_tasks, download_args)
-			if (not query.download_jobs) and (not query.queries):
-				break
-			if not new_tasks:
-				sleep(args.watch_interval)
-			query.refresh_status()
-			query.query_search()
-			old_tasks = tasks
-			tasks = query.pull_completed()
+				if new_tasks:
+					download_multiple_tasks(client, new_tasks, download_args)
+				if (not query.download_jobs) and (not query.queries):
+					break
+				if not new_tasks:
+					sleep(args.watch_interval)
+				query.refresh_status()
+				query.query_search()
+				old_tasks = tasks
+				tasks = query.pull_completed()
+			except:
+				print 'An error cought and passed in watch mode...'
 
 	else:
 		tasks = query.peek_download_jobs()
