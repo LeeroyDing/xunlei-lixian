@@ -10,21 +10,30 @@ import os.path
 import json
 from ast import literal_eval
 
-def retry(f):
+
+def retry(f_or_arg, *args):
 	#retry_sleeps = [1, 1, 1]
 	retry_sleeps = [1, 2, 3, 5, 10, 20, 30, 60] + [60] * 60
-	def withretry(*args, **kwargs):
-		for second in retry_sleeps:
-			try:
-				return f(*args, **kwargs)
-			except:
-				import traceback
-				import sys
-				print "Exception in user code:"
-				traceback.print_exc(file=sys.stdout)
-				time.sleep(second)
-		raise
-	return withretry
+	def decorator(f):
+		def withretry(*args, **kwargs):
+			for second in retry_sleeps:
+				try:
+					return f(*args, **kwargs)
+				except:
+					import traceback
+					logger.debug("Exception happened. Retrying...")
+					logger.debug(traceback.format_exc())
+					time.sleep(second)
+			raise
+		return withretry
+	if callable(f_or_arg) and not args:
+		return decorator(f_or_arg)
+	else:
+		a = f_or_arg
+		assert type(a) == int
+		assert not args
+		retry_sleeps = [1] * a
+		return decorator
 
 class Logger:
 	def stdout(self, message):
@@ -41,7 +50,7 @@ logger = Logger()
 class XunleiClient:
 	page_size = 100
 	bt_page_size = 9999
-	def __init__(self, username=None, password=None, cookie_path=None, login=True):
+	def __init__(self, username=None, password=None, cookie_path=None, login=True, verification_code_reader=None):
 		self.username = username
 		self.password = password
 		self.cookie_path = cookie_path
@@ -53,6 +62,7 @@ class XunleiClient:
 			self.cookiejar = cookielib.CookieJar()
 		self.set_page_size(self.page_size)
 		self.opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(self.cookiejar))
+		self.verification_code_reader = verification_code_reader
 		if login:
 			if not self.has_logged_in():
 				self.login()
@@ -187,11 +197,20 @@ class XunleiClient:
 		cachetime = current_timestamp()
 		check_url = 'http://login.xunlei.com/check?u=%s&cachetime=%d' % (username, cachetime)
 		login_page = self.urlopen(check_url).read()
-		verifycode = self.get_cookie('.xunlei.com', 'check_result')[2:].upper()
-		assert verifycode
+		verification_code = self.get_cookie('.xunlei.com', 'check_result')[2:].upper()
+		if not verification_code:
+			if not self.verification_code_reader:
+				raise NotImplementedError('Verification code required')
+			else:
+				verification_code_url = 'http://verify2.xunlei.com/image?cachetime=%s' % current_timestamp()
+				image = self.urlopen(verification_code_url).read()
+				verification_code = self.verification_code_reader(image)
+				if verification_code:
+					verification_code = verification_code.upper()
+		assert verification_code
 		password = encypt_password(password)
-		password = md5(password+verifycode)
-		login_page = self.urlopen('http://login.xunlei.com/sec2login/', data={'u': username, 'p': password, 'verifycode': verifycode})
+		password = md5(password+verification_code)
+		login_page = self.urlopen('http://login.xunlei.com/sec2login/', data={'u': username, 'p': password, 'verifycode': verification_code})
 		self.id = self.get_userid()
 		self.set_page_size(1)
 		login_page = self.urlopen('http://dynamic.lixian.vip.xunlei.com/login?cachetime=%d&from=0'%current_timestamp()).read()
@@ -217,6 +236,7 @@ class XunleiClient:
 			self.set_cookie('.xunlei.com', k, '')
 		self.save_cookies()
 
+	@retry(10)
 	def read_task_page_url(self, url):
 		page = self.urlread(url).decode('utf-8', 'ignore')
 		data = parse_json_response(page)
@@ -280,15 +300,12 @@ class XunleiClient:
 		'''read all pages of completed tasks'''
 		return self.read_all_tasks(2)
 
+	@retry(10)
 	def read_categories(self):
 #		url = 'http://dynamic.cloud.vip.xunlei.com/interface/menu_get?callback=jsonp%s&interfrom=task' % current_timestamp()
 		url = 'http://dynamic.cloud.vip.xunlei.com/interface/menu_get'
-		html = self.urlread(url)
-		m = re.match(r'rebuild\((\{.*\})\)', html)
-		if not m:
-			logger.trace(html)
-			raise RuntimeError('Invalid response')
-		result = json.loads(m.group(1))
+		html = self.urlread(url).decode('utf-8', 'ignore')
+		result = parse_json_response(html)
 		return dict((x['name'], int(x['id'])) for x in result['info'])
 
 	def get_category_id(self, category):
@@ -640,7 +657,7 @@ def convert_task(data):
 	return task
 
 def parse_json_response(html):
-	m = re.match(r'rebuild\((\{.*\})\)', html)
+	m = re.match(ur'^\ufeff?rebuild\((\{.*\})\)$', html)
 	if not m:
 		logger.trace(html)
 		raise RuntimeError('Invalid response')
