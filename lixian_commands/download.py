@@ -315,8 +315,9 @@ def download_task(args):
 				query.query_search()
 				old_tasks = tasks
 				tasks = query.pull_completed()
-			except:
+			except Exception as e:
 				print 'An error cought and passed in watch mode...'
+				print e
 
 	else:
 		tasks = query.peek_download_jobs()
