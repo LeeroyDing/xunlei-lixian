@@ -1,5 +1,6 @@
 
 import lixian_download_tools
+import lixian_nodes
 from lixian_commands.util import *
 from lixian_cli_parser import *
 from lixian_config import *
@@ -10,6 +11,7 @@ import lixian_query
 import lixian_hash
 import lixian_hash_bt
 import lixian_hash_ed2k
+
 import os
 import os.path
 import re
@@ -47,29 +49,6 @@ def verify_mini_bt_hash(dirname, files):
 			return False
 	return True
 
-def resolve_node_url(client, url):
-	import urllib2
-	request = urllib2.Request(url, headers={'Cookie': 'gdriveid=' + client.get_gdriveid()})
-	response = urllib2.urlopen(request, timeout=60)
-	response.close()
-	return response.geturl()
-
-def switch_node(client, url, node):
-	assert re.match(r'^vod\d+$', node)
-	import lixian_logging
-	logger = lixian_logging.get_logger()
-	logger.debug('Download URL: ' + url)
-	try:
-		url = resolve_node_url(client, url)
-		logger.debug('Resolved URL: ' + url)
-	except:
-		import traceback
-		logger.debug(traceback.format_exc())
-		return url
-	url = re.sub(r'(http://)(vod\d+)(\.t\d+\.lixian\.vip\.xunlei\.com)', r'\1%s\3' % node, url)
-	logger.debug('Switch to node URL: ' + url)
-	return url
-
 def download_file(client, path, task, options):
 	download_tool = lixian_download_tools.get_tool(options['tool'])
 
@@ -81,7 +60,16 @@ def download_file(client, path, task, options):
 
 	url = str(task['xunlei_url'])
 	if options['node']:
-		url = switch_node(client, url, options['node'])
+		if options['node'] == 'best' or options['node'] == 'fastest':
+			from lixian_util import parse_size
+			if task['size'] >= parse_size(options['node_detection_threshold']):
+				url = lixian_nodes.use_fastest_node(url, options['vod_nodes'], client.get_gdriveid())
+		elif options['node'] == 'fast':
+			from lixian_util import parse_size
+			if task['size'] >= parse_size(options['node_detection_threshold']):
+				url = lixian_nodes.use_fast_node(url, options['vod_nodes'], parse_size(options['node_detection_acceptable']), client.get_gdriveid())
+		else:
+			url = lixian_nodes.switch_node(url, options['node'], client.get_gdriveid())
 
 	def download1(download, path):
 		if not os.path.exists(path):
@@ -273,7 +261,10 @@ def download_multiple_tasks(client, tasks, options):
 @command_line_option('watch')
 @command_line_option('watch-present')
 @command_line_value('watch-interval', default=get_config('watch-interval', '3m'))
-@command_line_value('node')
+@command_line_value('node', default=get_config('node'))
+@command_line_value('node-detection-threshold', default=get_config('node-detection-threshold', '100M'))
+@command_line_value('node-detection-acceptable', default=get_config('node-detection-acceptable', '1M'))
+@command_line_value('vod-nodes', default=get_config('vod-nodes', lixian_nodes.VOD_RANGE))
 def download_task(args):
 	assert len(args) or args.input or args.all or args.category, 'Not enough arguments'
 	lixian_download_tools.get_tool(args.tool) # check tool
@@ -289,6 +280,9 @@ def download_task(args):
 	                 'no_bt_dir': not args.bt_dir,
 	                 'save_torrent_file': args.save_torrent_file,
 	                 'node': args.node,
+	                 'node_detection_threshold': args.node_detection_threshold,
+	                 'node_detection_acceptable': args.node_detection_acceptable,
+	                 'vod_nodes': args.vod_nodes,
 	                 'colors': args.colors}
 	client = create_client(args)
 	query = lixian_query.build_query(client, args)
