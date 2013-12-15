@@ -190,7 +190,7 @@ def download_single_task(client, task, options):
 			name = safe_encode_native_path(os.path.join(*splitted_path))
 			path = dirname + os.path.sep + name # fix issue #82
 			if splitted_path[:-1]:
-				subdir = os.path.join(*splitted_path[:-1]).encode(default_encoding)
+				subdir = safe_encode_native_path(os.path.join(*splitted_path[:-1]))
 				subdir = dirname + os.path.sep + subdir # fix issue #82
 				if not os.path.exists(subdir):
 					os.makedirs(subdir)
@@ -250,6 +250,8 @@ def download_multiple_tasks(client, tasks, options):
 @command_line_option('torrent', alias='bt')
 @command_line_option('all')
 @command_line_value('category')
+@command_line_value('limit', default=get_config('limit'))
+@command_line_value('page-size', default=get_config('page-size'))
 @command_line_option('delete', default=get_config('delete'))
 @command_line_option('continue', alias='c', default=get_config('continue'))
 @command_line_option('async', default=get_config('async'))
